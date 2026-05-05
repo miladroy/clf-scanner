@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloudflare Clean IP Scanner</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        .status {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #e67e22;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th { background-color: #2c3e50; color: white; }
+        tr:hover { background-color: #f1f1f1; }
+        .good-ping { color: #27ae60; font-weight: bold; }
+        .med-ping { color: #d35400; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h1>Cloudflare Clean IP Scanner</h1>
+    
+    <div class="controls">
+        <button id="startBtn" onclick="startScan()">Start Scan</button>
+        <button id="stopBtn" onclick="stopScan()" disabled>Stop Scan</button>
+    </div>
+
+    <div class="status" id="statusText">Ready to scan. Click 'Start Scan'.</div>
+
+    <table id="resultsTable">
+        <thead>
+            <tr>
+                <th>IP Address</th>
+                <th>Latency (ms)</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="resultsBody">
+            </tbody>
+    </table>
+
+    <script>
+        // Official Cloudflare IPv4 Ranges
+        const cfSubnets = [
+            "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", 
+            "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", 
+            "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", 
+            "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", 
+            "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"
+        ];
+
+        let isScanning = false;
+        let validIPs = [];
+
+        // Helper to convert IP string to a long integer
+        function ipToLong(ip) {
+            return ip.split('.').reduce((acc, octet) => (acc * 256) + parseInt(octet), 0);
+        }
+
+        // Helper to convert long integer back to IP string
+        function longToIp(long) {
+            return [
+                Math.floor(long / Math.pow(256, 3)) % 256,
+                Math.floor(long / Math.pow(256, 2)) % 256,
+                Math.floor(long / 256) % 256,
+                long % 256
+            ].join('.');
+        }
+
+        // Generate a random IP from a given CIDR block
+        function getRandomIP(cidr) {
+            const parts = cidr.split('/');
+            const baseIp = parts[0];
+            const prefix = parseInt(parts[1]);
+            
+            const baseLong = ipToLong(baseIp);
+            const totalIps = Math.pow(2, 32 - prefix);
+            
+            // Avoid network and broadcast addresses
+            const randomOffset = Math.floor(Math.random() * (totalIps - 2)) + 1; 
+            return longToIp(baseLong + randomOffset);
+        }
+
+        // Test a single IP address
+        async function testIP(ip) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5s timeout for quick scanning
+            
+            const startTime = performance.now();
+            try {
+                // We use HTTP and no-cors to prevent SSL and CORS errors in the browser
+                // If it successfully connects and fetches, the IP is reachable.
+                await fetch(`http://${ip}/cdn-cgi/trace`, {
+                    mode: 'no-cors',
+                    cache: 'no-store',
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                const latency = Math.round(performance.now() - startTime);
+                return latency;
+            } catch (error) {
+                clearTimeout(timeoutId);
+                return null; // IP blocked or timed out
+            }
+        }
+
+        // Update the table with results
+        function updateTable() {
+            const tbody = document.getElementById('resultsBody');
+            tbody.innerHTML = '';
+            
+            // Sort by lowest latency
+            validIPs.sort((a, b) => a.latency - b.latency);
+
+            validIPs.forEach(item => {
+                const tr = document.createElement('tr');
+                
+                let pingClass = 'med-ping';
+                let status = 'Working';
+                if (item.latency < 250) {
+                    pingClass = 'good-ping';
+                    status = 'Excellent';
+                }
+
+                tr.innerHTML = `
+                    <td><strong>${item.ip}</strong></td>
+                    <td class="${pingClass}">${item.latency} ms</td>
+                    <td class="${pingClass}">${status}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function startScan() {
+            isScanning = true;
+            validIPs = [];
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('resultsBody').innerHTML = '';
+            
+            const statusText = document.getElementById('statusText');
+            
+            let testsCompleted = 0;
+            const batchSize = 10; // Test 10 IPs at a time
+            const maxWorkingIPs = 15; // Stop after finding 15 good ones to save resources
+
+            while (isScanning && validIPs.length < maxWorkingIPs) {
+                statusText.innerText = `Scanning... Found ${validIPs.length} working IPs so far.`;
+                
+                // Generate a batch of random IPs
+                const batch = [];
+                for(let i = 0; i < batchSize; i++) {
+                    const randomSubnet = cfSubnets[Math.floor(Math.random() * cfSubnets.length)];
+                    batch.push(getRandomIP(randomSubnet));
+                }
+
+                // Test the batch concurrently
+                const promises = batch.map(async (ip) => {
+                    if (!isScanning) return;
+                    const latency = await testIP(ip);
+                    if (latency !== null) {
+                        validIPs.push({ ip, latency });
+                        updateTable();
+                    }
+                });
+
+                await Promise.all(promises);
+                testsCompleted += batchSize;
+
+                // Failsafe to prevent infinite loops if internet is completely down
+                if (testsCompleted > 300) { 
+                    statusText.innerText = "Tested 300 IPs but found very few working ones. Network might be highly restricted right now.";
+                    break;
+                }
+            }
+
+            if (isScanning) {
+                statusText.innerText = `Scan complete! Found top working IPs.`;
+                stopScan();
+            }
+        }
+
+        function stopScan() {
+            isScanning = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            if(validIPs.length > 0) {
+                document.getElementById('statusText').innerText = `Scan stopped. Displaying ${validIPs.length} accessible IPs.`;
+            } else {
+                document.getElementById('statusText').innerText = `Scan stopped. No IPs found.`;
+            }
+        }
+    </script>
+</body>
+</html>
