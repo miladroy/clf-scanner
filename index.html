@@ -123,26 +123,34 @@
             return longToIp(baseLong + randomOffset);
         }
 
-        // Test a single IP address
+        // Test a single IP address (Updated for HTTPS / Mixed Content bypass)
         async function testIP(ip) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1500); // 1.5s timeout for quick scanning
+            const timeout = 1500; // 1.5 seconds max
+            const timeoutId = setTimeout(() => controller.abort(), timeout); 
             
             const startTime = performance.now();
             try {
-                // We use HTTP and no-cors to prevent SSL and CORS errors in the browser
-                // If it successfully connects and fetches, the IP is reachable.
-                await fetch(`http://${ip}/cdn-cgi/trace`, {
+                // Now using HTTPS to satisfy GitHub Pages
+                await fetch(`https://${ip}/cdn-cgi/trace`, {
                     mode: 'no-cors',
                     cache: 'no-store',
                     signal: controller.signal
                 });
                 clearTimeout(timeoutId);
-                const latency = Math.round(performance.now() - startTime);
-                return latency;
+                return Math.round(performance.now() - startTime);
             } catch (error) {
                 clearTimeout(timeoutId);
-                return null; // IP blocked or timed out
+                const timeTaken = Math.round(performance.now() - startTime);
+                
+                // If it fails FAST, the IP is working. The browser just rejected 
+                // the raw IP's SSL certificate, but the TCP connection succeeded!
+                if (timeTaken < (timeout - 100)) {
+                    return timeTaken;
+                }
+                
+                // If it took the full 1.5s, the firewall dropped the packets.
+                return null; 
             }
         }
 
