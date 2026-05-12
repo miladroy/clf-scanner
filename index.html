@@ -3,86 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cloudflare Clean IP Scanner</title>
+    <title>Cloudflare Fast 5 Scanner</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: #f4f7f6;
             color: #333;
-            max-width: 800px;
+            max-width: 600px;
             margin: 0 auto;
             padding: 20px;
         }
-        h1 {
-            color: #2c3e50;
-            text-align: center;
-        }
-        .controls {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
+        h1 { color: #2c3e50; text-align: center; }
+        .controls { display: flex; justify-content: center; margin-bottom: 20px; }
         button {
-            background-color: #3498db;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            font-size: 16px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: background 0.3s;
+            background-color: #27ae60; color: white; border: none;
+            padding: 12px 24px; font-size: 16px; border-radius: 5px;
+            cursor: pointer; font-weight: bold; transition: background 0.3s;
         }
-        button:hover { background-color: #2980b9; }
+        button:hover { background-color: #2ecc71; }
         button:disabled { background-color: #95a5a6; cursor: not-allowed; }
-        .status {
-            text-align: center;
-            font-weight: bold;
-            margin-bottom: 20px;
-            color: #e67e22;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
-        }
+        .status { text-align: center; font-weight: bold; margin-bottom: 20px; color: #2980b9; height: 24px;}
+        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background-color: #2c3e50; color: white; }
-        tr:hover { background-color: #f1f1f1; }
-        .good-ping { color: #27ae60; font-weight: bold; }
-        .med-ping { color: #d35400; font-weight: bold; }
+        .success { color: #27ae60; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h1>Cloudflare Clean IP Scanner</h1>
+    <h1>Cloudflare Fast 5 Scanner</h1>
     
     <div class="controls">
-        <button id="startBtn" onclick="startScan()">Start Scan</button>
-        <button id="stopBtn" onclick="stopScan()" disabled>Stop Scan</button>
+        <button id="startBtn" onclick="startFastScan()">Find 5 IPs</button>
     </div>
 
-    <div class="status" id="statusText">Ready to scan. Click 'Start Scan'.</div>
+    <div class="status" id="statusText">Ready.</div>
 
     <table id="resultsTable">
         <thead>
             <tr>
+                <th>#</th>
                 <th>IP Address</th>
-                <th>Latency (ms)</th>
-                <th>Status</th>
+                <th>Latency</th>
             </tr>
         </thead>
         <tbody id="resultsBody">
-            </tbody>
+        </tbody>
     </table>
 
     <script>
-        // Official Cloudflare IPv4 Ranges
         const cfSubnets = [
             "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", 
             "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", 
@@ -91,15 +60,14 @@
             "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"
         ];
 
-        let isScanning = false;
         let validIPs = [];
+        let isScanning = false;
+        let globalAbortController = null;
 
-        // Helper to convert IP string to a long integer
         function ipToLong(ip) {
             return ip.split('.').reduce((acc, octet) => (acc * 256) + parseInt(octet), 0);
         }
 
-        // Helper to convert long integer back to IP string
         function longToIp(long) {
             return [
                 Math.floor(long / Math.pow(256, 3)) % 256,
@@ -109,136 +77,113 @@
             ].join('.');
         }
 
-        // Generate a random IP from a given CIDR block
-        function getRandomIP(cidr) {
+        function getRandomIP() {
+            const cidr = cfSubnets[Math.floor(Math.random() * cfSubnets.length)];
             const parts = cidr.split('/');
-            const baseIp = parts[0];
+            const baseLong = ipToLong(parts[0]);
             const prefix = parseInt(parts[1]);
-            
-            const baseLong = ipToLong(baseIp);
             const totalIps = Math.pow(2, 32 - prefix);
-            
-            // Avoid network and broadcast addresses
             const randomOffset = Math.floor(Math.random() * (totalIps - 2)) + 1; 
             return longToIp(baseLong + randomOffset);
         }
 
-        // Test a single IP address (Updated for HTTPS / Mixed Content bypass)
-        async function testIP(ip) {
-            const controller = new AbortController();
-            const timeout = 1500; // 1.5 seconds max
-            const timeoutId = setTimeout(() => controller.abort(), timeout); 
-            
-            const startTime = performance.now();
-            try {
-                // Now using HTTPS to satisfy GitHub Pages
-                await fetch(`https://${ip}/cdn-cgi/trace`, {
-                    mode: 'no-cors',
-                    cache: 'no-store',
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-                return Math.round(performance.now() - startTime);
-            } catch (error) {
-                clearTimeout(timeoutId);
-                const timeTaken = Math.round(performance.now() - startTime);
-                
-                // If it fails FAST, the IP is working. The browser just rejected 
-                // the raw IP's SSL certificate, but the TCP connection succeeded!
-                if (timeTaken < (timeout - 100)) {
-                    return timeTaken;
-                }
-                
-                // If it took the full 1.5s, the firewall dropped the packets.
-                return null; 
-            }
-        }
-
-        // Update the table with results
-        function updateTable() {
+        function updateUI() {
             const tbody = document.getElementById('resultsBody');
             tbody.innerHTML = '';
-            
-            // Sort by lowest latency
-            validIPs.sort((a, b) => a.latency - b.latency);
-
-            validIPs.forEach(item => {
+            validIPs.forEach((item, index) => {
                 const tr = document.createElement('tr');
-                
-                let pingClass = 'med-ping';
-                let status = 'Working';
-                if (item.latency < 250) {
-                    pingClass = 'good-ping';
-                    status = 'Excellent';
-                }
-
                 tr.innerHTML = `
+                    <td>${index + 1}</td>
                     <td><strong>${item.ip}</strong></td>
-                    <td class="${pingClass}">${item.latency} ms</td>
-                    <td class="${pingClass}">${status}</td>
+                    <td class="success">${item.latency} ms</td>
                 `;
                 tbody.appendChild(tr);
             });
         }
 
-        async function startScan() {
-            isScanning = true;
-            validIPs = [];
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('stopBtn').disabled = false;
-            document.getElementById('resultsBody').innerHTML = '';
-            
-            const statusText = document.getElementById('statusText');
-            
-            let testsCompleted = 0;
-            const batchSize = 10; // Test 10 IPs at a time
-            const maxWorkingIPs = 15; // Stop after finding 15 good ones to save resources
-
-            while (isScanning && validIPs.length < maxWorkingIPs) {
-                statusText.innerText = `Scanning... Found ${validIPs.length} working IPs so far.`;
-                
-                // Generate a batch of random IPs
-                const batch = [];
-                for(let i = 0; i < batchSize; i++) {
-                    const randomSubnet = cfSubnets[Math.floor(Math.random() * cfSubnets.length)];
-                    batch.push(getRandomIP(randomSubnet));
+        async function testIP(ip, signal) {
+            const startTime = performance.now();
+            const timeoutId = setTimeout(() => {
+                // Local abort just for this request's timeout
+                if (!signal.aborted) {
+                    // Create a temporary abort controller just to kill the fetch if it hangs
+                    const tempAbort = new AbortController(); 
+                    tempAbort.abort(); 
                 }
+            }, 1500); 
 
-                // Test the batch concurrently
-                const promises = batch.map(async (ip) => {
-                    if (!isScanning) return;
-                    const latency = await testIP(ip);
-                    if (latency !== null) {
-                        validIPs.push({ ip, latency });
-                        updateTable();
-                    }
+            try {
+                await fetch(`https://${ip}/cdn-cgi/trace`, {
+                    mode: 'no-cors',
+                    cache: 'no-store',
+                    signal: signal // Binds to the global kill-switch
                 });
+                clearTimeout(timeoutId);
+                return Math.round(performance.now() - startTime);
+            } catch (error) {
+                clearTimeout(timeoutId);
+                // If the fetch was aborted by our global kill-switch, ignore it
+                if (error.name === 'AbortError') return null;
 
-                await Promise.all(promises);
-                testsCompleted += batchSize;
-
-                // Failsafe to prevent infinite loops if internet is completely down
-                if (testsCompleted > 300) { 
-                    statusText.innerText = "Tested 300 IPs but found very few working ones. Network might be highly restricted right now.";
-                    break;
+                const timeTaken = Math.round(performance.now() - startTime);
+                // Fast failure = success (SSL mismatch, but TCP connected)
+                if (timeTaken < 1400) {
+                    return timeTaken;
                 }
-            }
-
-            if (isScanning) {
-                statusText.innerText = `Scan complete! Found top working IPs.`;
-                stopScan();
+                return null;
             }
         }
 
-        function stopScan() {
-            isScanning = false;
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('stopBtn').disabled = true;
-            if(validIPs.length > 0) {
-                document.getElementById('statusText').innerText = `Scan stopped. Displaying ${validIPs.length} accessible IPs.`;
-            } else {
-                document.getElementById('statusText').innerText = `Scan stopped. No IPs found.`;
+        async function startFastScan() {
+            if (isScanning) return;
+            
+            isScanning = true;
+            validIPs = [];
+            updateUI();
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('statusText').innerText = "Hunting for 5 fast IPs...";
+
+            // Create a new kill-switch for this scanning session
+            globalAbortController = new AbortController();
+            const signal = globalAbortController.signal;
+
+            const targetCount = 5;
+            const batchSize = 20; // Test 20 at a time. Safe for browsers.
+
+            while (validIPs.length < targetCount && isScanning) {
+                const batch = Array.from({ length: batchSize }, getRandomIP);
+                
+                // We use Promise.all to wait for the batch, BUT as soon as a single test 
+                // finishes, we check if we hit our target.
+                const testPromises = batch.map(async (ip) => {
+                    if (validIPs.length >= targetCount) return; // Stop processing if we have 5
+
+                    const latency = await testIP(ip, signal);
+                    
+                    if (latency !== null && validIPs.length < targetCount) {
+                        validIPs.push({ ip, latency });
+                        updateUI();
+                        document.getElementById('statusText').innerText = `Found ${validIPs.length} / 5...`;
+                        
+                        // KILL SWITCH TRIGGER
+                        if (validIPs.length >= targetCount) {
+                            globalAbortController.abort(); // Instantly kills all other pending fetches
+                            isScanning = false;
+                        }
+                    }
+                });
+
+                // Wait for whatever requests weren't aborted to finish before firing the next batch
+                try {
+                    await Promise.all(testPromises);
+                } catch(e) {
+                    // Catch intentional aborts
+                }
             }
+
+            document.getElementById('statusText').innerText = "Success! Found 5 working IPs.";
+            document.getElementById('startBtn').disabled = false;
+            isScanning = false;
         }
     </script>
 </body>
